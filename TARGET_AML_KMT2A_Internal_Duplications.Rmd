@@ -1,0 +1,317 @@
+---
+title: "Find ITDs/PTD in KMT2A by RNA-seq"
+author: "Jenny Smith"
+date: "7/10/20"
+output: html_document
+---
+
+```{r setup}
+library(knitr)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME, "2020.07.06_MLL_Tandem_Duplications"))
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, 
+                      fig.align='center', fig.width = 10, fig.height = 10)
+options(stringsAsFactors = FALSE,bitmapType = 'cairo', device='x11')
+grDevices::X11.options(type='cairo')
+```
+
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+library(ggplot2)
+library(Cairo)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(readr)
+library(DeGSEA)
+getwd()
+```
+
+
+#Raw Counts
+
+```{r}
+AML.NBM.only <- FALSE
+```
+
+```{r}
+rbd.cts <- readRDS(file.path(PROJHOME,"0000.00.03_ExpressionMatrices/TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_Fractionalcounts.RDS"))
+
+if(AML.NBM.only){
+  #remove cell lines, MPN, flow sorted and replicate samples
+  rbd.cts <- rbd.cts[,-grep("Kas|MV4|MPN[0-9]|Sort|replicate", 
+                            colnames(rbd.cts), ignore.case = TRUE)]
+  # #Set-rownames
+  # rbd.cts <- column_to_rownames(rbd.cts, "X1")
+  # 
+  # #change to only USI for colnames
+  # colnames(rbd.cts) <- str_split_fixed(colnames(rbd.cts),  "\\.", 5)[,3]
+
+}
+  
+dim(rbd.cts) #51573  1460
+head(rbd.cts[,1:5])
+```
+
+```{r}
+TPM <- readRDS(file.path(PROJHOME,"0000.00.03_ExpressionMatrices/TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_TPM.RDS"))
+
+if(AML.NBM.only){
+  #remove cell lines, MPN, flow sorted and replicate samples
+  TPM <- TPM[,-grep("Kas|MV4|MPN[0-9]|Sort|replicate", 
+                            colnames(TPM), ignore.case = TRUE)]
+  # #Set-rownames
+  # TPM <- column_to_rownames(TPM, "X1")
+  # 
+  # #change to only USI for colnames
+  # colnames(TPM) <- str_split_fixed(colnames(TPM),  "\\.", 5)[,3]
+
+}
+  
+dim(TPM) #51573  1460
+head(TPM[,1:5])
+```
+
+
+#ClinData
+
+```{r}
+merged <- read.csv(file.path(CDE,"Merged/TARGET_AML_0531_1031_merged_CDEs_7.08.20.csv"))
+
+merged <- merged %>% 
+  filter(!is.na(USI) | USI != "Unknown")
+
+
+dim(merged)
+```
+
+
+#Foundation Medicine Results 
+
+```{r}
+# dir()
+FMI <- openxlsx::read.xlsx("TARGET_AML_0531_1031_merged_CDEs_9.4_added_FM_report.xlsx",
+                           sheet = 1,check.names = TRUE) %>% 
+  select(USI,Protocol, FMI, FMI.SAMPLE.ID,SUBJECT.ID:Mutation.5, everything())
+
+dim(FMI)
+head(FMI)
+```
+
+```{r}
+IDmap <- FMI %>% 
+  select(USI,Reg., Protocol, FMI.SAMPLE.ID) %>% 
+  filter(!is.na(FMI.SAMPLE.ID)) %>% 
+  unique()
+
+
+# head(IDmap)
+dim(IDmap) #46  3
+
+# write.csv(IDmap, "TARGET_Foundation_Medicine_IDmap.csv", row.names = FALSE)
+```
+
+
+```{r}
+FMI.raw <- read.csv("FMI_Study_FredHutch_n47_30JUN2020.csv") %>% 
+  left_join(., IDmap, by=c("FMI.SAMPLE.ID")) %>% 
+  select(Reg.,USI,Protocol, everything())
+
+
+head(FMI.raw)
+```
+
+
+#ITD/PTD Datasets 
+
+
+```{r}
+dir(file.path(PROJHOME), pattern = "CICERO|TransAbyss")
+```
+
+```{r}
+CICERO_dup <- read.csv(file.path(PROJHOME,"2020.04.13_CICERO_St.Jude/CICERO_raw/Raw_CICERO_Output_ITDs_20200324.csv"))
+
+dim(CICERO_dup)
+table(CICERO_dup$Type)
+```
+
+```{r}
+RNAindel_dup <- read.csv(file.path(PROJHOME,"2020.04.13_CICERO_St.Jude/CICERO_CDEs/RNAindel_Kohei_RNAseq_Data.csv"))
+
+dim(RNAindel_dup)
+```
+
+```{r}
+TAindels_dup <- readRDS(file.path(PROJHOME,"2018.02.05_TransAbyss_Fusion/indels/TARGET_AML_0531_1031_events_exons_novel_1.4.19.RDS"))
+
+dim(TAindels_dup) #38,919,510       26
+```
+
+```{r}
+TCS_dup <- read.delim(file.path(TARGET,"DNA/TCS/level4/2017Dec_landscape_paper/annotatedVarsTbl684DxSamples.txt"), 
+                  na.strings = c("^\\-$","\\-")) %>% 
+  rownames_to_column("Gene") %>% 
+  gather(USI,Mutation_type, -Gene) %>% 
+  mutate_at(vars(Mutation_type), ~ifelse(.=="-", NA, .)) 
+
+dim(TCS_dup)
+# head(TCS_dup)
+```
+
+```{r}
+WGS_dup <- openxlsx::read.xlsx(file.path(TARGET,"DNA/WGS/level4/2014_St.Jude_Protein_Paint/stjude_analysis_for_protein_paint.xlsx"), 
+                               sheet=2)
+
+dim(WGS_dup)
+# head(WGS)
+```
+
+
+#Filter for MLL Tandem duplications
+
+MLL == KMT2A
+MLL2 == KMT2D
+MLL3 == KMT2C
+
+```{r}
+FMI.MLL <- FMI.raw %>% 
+  filter(grepl("MLL|KMT2A",GENE)) %>% 
+  filter(grepl("dup|rearr",REARR.DESCRIPTION)) %>% 
+  select(1:3,REARR.GENE1, REARR.GENE2, REARR.POS1:REARR.NUMBER.OF.READS )
+
+
+head(FMI.MLL)
+# View(FMI.MLL)
+# write.csv(FMI.MLL,"TARGET_AML_FMI_MLL.PTD_data.csv", row.names = FALSE)
+```
+
+```{r}
+datasets <- ls(pattern = "_dup")
+names(datasets) <- datasets
+datasets <- lapply(datasets, get)
+
+
+
+lapply(datasets, head)
+lapply(datasets, dim)
+rm(list=ls(pattern = "_dup"))
+```
+
+```{r}
+#clean up some data sets
+datasets$CICERO_dup$USI <- str_split_fixed(datasets$CICERO_dup$Patient, pattern = "\\.", n=5)[,3]
+datasets$RNAindel_dup$USI <- str_split_fixed(datasets$RNAindel_dup$Sample, pattern = "\\-", n=5)[,3]
+datasets$TAindels_dup$USI <- str_split_fixed(datasets$TAindels_dup$Patient, pattern = "\\-", n=5)[,3]
+```
+
+```{r}
+table(is.na(datasets$CICERO_dup$Fusion.Gene))
+table(datasets$CICERO_dup$Fusion.Gene=="")
+table(datasets$CICERO_dup$geneA=="")
+table(is.na(datasets$CICERO_dup$geneA))
+table(datasets$TAindels_dup$type)
+
+# any(datasets$CICERO_dup$geneA != datasets$CICERO_dup$geneB)
+# table(grepl("KMT2A|MLL",datasets$CICERO_dup$geneA))
+```
+
+
+```{r}
+datasets_MLL <- lapply(datasets, function(x) x %>%
+                         rename_all(~gsub("^TARGET_CASE_ID$","USI", .)) %>% 
+                         rename_all(~gsub("annovar_gene|annovar_sj_gene|^geneA$|^gene$", "Gene", .)) %>% 
+                         filter(grepl("KMT2A|^MLL$|^MLL1$", Gene)) %>% 
+                         select(USI, one_of(c("Patient","Sample")), everything()))
+
+
+lapply(datasets_MLL, dim)
+```
+
+```{r}
+lapply(datasets_MLL, head)
+```
+
+```{r} 
+lapply(datasets, function(x) table(grepl(paste(FMI.MLL$USI, collapse="|") ,x$USI)))
+
+lapply(datasets_MLL, function(x) table(grepl(paste(FMI.MLL$USI, collapse="|") ,x$USI)))
+# dataset_validation <- lapply(dataset, function(x) grepl(paste(FMI.MLL$USI, collapse="|") ,x$USI) )
+```
+
+So RNAindel and CICERO dont contain any MLL/KMT2A duplication data
+
+```{r}
+TA_MLL <- FMI.MLL %>% 
+  rename_at(vars(REARR.GENE1:REARR.NUMBER.OF.READS), ~paste0(., "_FMI.Data")) %>%
+  left_join(., datasets_MLL$TAindels_dup, 
+            by="USI")  %>% 
+  mutate(Position=paste(paste(chr,chr_start, sep=":"), chr_end, sep="-"), 
+         Size=abs(chr_start-chr_end)) %>%
+
+  select(Patient,USI, Gene, Position,Size, matches("REARR.POS"), 
+         type, everything())
+         
+         
+head(TA_MLL)
+dim(TA_MLL)
+```
+
+```{r}
+table(TA_MLL$type)
+table(TA_MLL$Size)
+```
+
+```{r}
+filter(TA_MLL, Size != 0)
+```
+
+```{r}
+# write.csv(TA_MLL, "TARGET_AML_MLL_duplications_TransAbyss.csv", row.names = FALSE)
+```
+
+#FLT3-ITD 
+
+
+```{r}
+datasets_FLT3 <- lapply(datasets, function(x) x %>%
+                         rename_all(~gsub("^TARGET_CASE_ID$","USI", .)) %>% 
+                         rename_all(~gsub("annovar_gene|annovar_sj_gene|^geneA$|^gene$", "Gene", .)) %>% 
+                         filter(grepl("FLT3", Gene)) %>% 
+                         select(USI, one_of(c("Patient","Sample")), everything()))
+
+
+lapply(datasets_FLT3, dim)
+```
+
+```{r}
+CICERO_FLT3
+```
+
+
+```{r}
+TA_FLT3 <- merged %>% 
+  filter(FLT3.ITD.positive. == "Yes") %>% 
+  select(USI,Protocol, FLT3.ITD.positive., FLT3.ITD.allelic.ratio) %>% 
+  left_join(., datasets_FLT3$TAindels_dup, by="USI")  %>% 
+  mutate(Position=paste(paste(chr,chr_start, sep=":"), chr_end, sep="-"), 
+         Size=abs(chr_start-chr_end)) %>%
+
+  select(Patient,USI, Gene, Position,Size, 
+         type, everything())
+  
+```
+
+```{r}
+View(TA_FLT3)
+```
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+
